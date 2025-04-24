@@ -63,7 +63,10 @@ def helm_normalizer(text: str) -> str:
     def _tokenize(text):
         return re.split(" |-", text)
 
-    tokens = [white_space_fix(remove_articles(homogeneize_numbers(remove_punc(lower(t))))) for t in _tokenize(text)]
+    tokens = [
+        white_space_fix(remove_articles(homogeneize_numbers(remove_punc(lower(t)))))
+        for t in _tokenize(text)
+    ]
     return " ".join([t for t in tokens if t != ""]).strip()
 
 
@@ -338,32 +341,89 @@ def math_normalizer(text: str) -> str:  # noqa C901
     return text
 
 
+# def gsm8k_normalizer(text: str) -> str:
+#     """
+#     from https://github.com/openai/grade-school-math/blob/3101c7d5072418e28b9008a6636bde82a006892c/grade_school_math/dataset.py#L28
+#
+#     Args:
+#         text (str): input text
+#
+#     Returns:
+#         str: Output text, either the number found in the text or "[invalid]" if
+#         no number was found
+#     """
+#     ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
+#     INVALID_ANS = "[invalid]"
+#
+#     match = ANS_RE.search(text)
+#     if match:
+#         match_str = match.group(1).strip()
+#         match_str = match_str.replace(",", "")
+#         return match_str
+#     else:
+#         return INVALID_ANS
+
+
 def gsm8k_normalizer(text: str) -> str:
-    """
-    from https://github.com/openai/grade-school-math/blob/3101c7d5072418e28b9008a6636bde82a006892c/grade_school_math/dataset.py#L28
+    # step 1: if the model generated too much, get the first part
+    text = text.split("\nQ:")[0]
 
-    Args:
-        text (str): input text
-
-    Returns:
-        str: Output text, either the number found in the text or "[invalid]" if
-        no number was found
-    """
-    ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
-    INVALID_ANS = "[invalid]"
-
-    match = ANS_RE.search(text)
-    if match:
-        match_str = match.group(1).strip()
-        match_str = match_str.replace(",", "")
-        return match_str
+    # step 2: extract \boxed{ }
+    extracted_nums = re.findall(r"\\boxed\{(.*?)\}", repr(text))
+    if extracted_nums:
+        extracted_nums = extracted_nums[-1]
     else:
-        return INVALID_ANS
+        extracted_nums = text
+    # step 2: pick the last number
+    # try:
+    extracted_nums = re.sub(r"[^a-zA-Z0-9\s.,-]", " ", extracted_nums)
+
+    return greedy_extract_xml_answer(extracted_nums)
+
+    # text = text.replace(",", "")
+    # extracted_nums = [s for s in re.findall(r"-?\d+\.?\d*", text)]
+    # return str(float(extracted_nums[-1]))
+    # except Exception:
+    #     return str(-12345.678)
 
 
-PUNCT = {chr(i) for i in range(sys.maxunicode) if unicodedata.category(chr(i)).startswith("P")}.union(
-    string.punctuation
-)
+def greedy_extract_xml_answer(text: str) -> str:
+    """
+    Greedy extract will try to extract valid answer within \\boxed{..}
+    If no valid answer is found, it returns the last digit in the text pharse
+    """
+    pattern = r"(?<!\S)(?P<prefix>(?:-\$|\$-|\$|-)?)(?P<number>(?:(?:\d{1,3}(?:,\d{3})+)|\d+)(?:\.\d*)?)(?:%)?(?!\S)"
+    match = re.findall(pattern, text)
+    if match:
+        prefix = match[-1][0]  # may include '-' if the number is negative
+        number = match[-1][1]  # match.group("number")
+
+        # Remove commas from the number (e.g., "1,765" -> "1765")
+        number = number.replace(",", "")
+
+        # Remove a trailing ".00" if present.
+        if number.endswith(".00"):
+            number = number[:-3]
+        # If there's a lone trailing dot (e.g., "32."), remove it.
+        elif number.endswith("."):
+            number = number[:-1]
+
+        # Determine if a minus sign appears anywhere in the prefix.
+        sign = "-" if "-" in prefix else ""
+        return sign + number
+    try:
+        text = text.replace(",", "")
+        extracted_nums = [s for s in re.findall(r"-?\d+\.?\d*", text)]
+        return str(float(extracted_nums[-1]))
+    except Exception:
+        return "[invalid]"
+
+
+PUNCT = {
+    chr(i)
+    for i in range(sys.maxunicode)
+    if unicodedata.category(chr(i)).startswith("P")
+}.union(string.punctuation)
 
 _ARTICLE_PATTERNS = {
     Language.ENGLISH: r"\b(a|an|the)\b",
@@ -401,7 +461,9 @@ def remove_punc(text: str) -> str:
     return "".join(ch for ch in text if ch not in PUNCT)
 
 
-def get_multilingual_normalizer(lang: Language, lower: bool = True) -> Callable[[str], str]:
+def get_multilingual_normalizer(
+    lang: Language, lower: bool = True
+) -> Callable[[str], str]:
     tokenizer = get_word_tokenizer(lang)
 
     def _inner_normalizer(text: str) -> str:
@@ -467,23 +529,37 @@ def normalize_log_probs(
     normalized_log_probs = choices_logprob
     match normalization:
         case LogProbCharNorm(ignore_first_space=True):
-            assert choices_text is not None, "choices_text must be provided for character normalization"
+            assert (
+                choices_text is not None
+            ), "choices_text must be provided for character normalization"
             normalized_log_probs = [
-                choices_logprob[ix] / (len(choice) - 1 if choice[0] == " " else len(choice))
+                choices_logprob[ix]
+                / (len(choice) - 1 if choice[0] == " " else len(choice))
                 for ix, choice in enumerate(choices_text)
             ]
         case LogProbCharNorm(ignore_first_space=False):
-            assert choices_text is not None, "choices_text must be provided for character normalization"
-            normalized_log_probs = [choices_logprob[ix] / len(choice) for ix, choice in enumerate(choices_text)]
-        case LogProbTokenNorm():
-            assert choices_tokens is not None, "choices_tokens must be provided for token normalization"
+            assert (
+                choices_text is not None
+            ), "choices_text must be provided for character normalization"
             normalized_log_probs = [
-                choices_logprob[ix] / len(choices_tokens[ix]) for ix in range(len(choices_logprob))
+                choices_logprob[ix] / len(choice)
+                for ix, choice in enumerate(choices_text)
+            ]
+        case LogProbTokenNorm():
+            assert (
+                choices_tokens is not None
+            ), "choices_tokens must be provided for token normalization"
+            normalized_log_probs = [
+                choices_logprob[ix] / len(choices_tokens[ix])
+                for ix in range(len(choices_logprob))
             ]
         case LogProbPMINorm():
-            assert unconditioned_logprob is not None, "unconditioned_logprob must be provided for PMI normalization"
+            assert (
+                unconditioned_logprob is not None
+            ), "unconditioned_logprob must be provided for PMI normalization"
             normalized_log_probs = [
-                choices_logprob[ix] - unconditioned_logprob[ix] for ix in range(len(choices_logprob))
+                choices_logprob[ix] - unconditioned_logprob[ix]
+                for ix in range(len(choices_logprob))
             ]
 
     return normalized_log_probs

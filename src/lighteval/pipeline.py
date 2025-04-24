@@ -74,7 +74,6 @@ if is_nanotron_available():
 
     from lighteval.models.nanotron_model import NanotronLightevalModel
 
-
 import logging
 
 
@@ -141,7 +140,9 @@ class Pipeline:
         metric_options=None,
     ):
         if not (model or model_config):
-            raise ValueError("Must provide either a model or model config when creating a pipeline.")
+            raise ValueError(
+                "Must provide either a model or model config when creating a pipeline."
+            )
 
         self.pipeline_parameters = pipeline_parameters
         self.launcher_type = self.pipeline_parameters.launcher_type
@@ -156,9 +157,13 @@ class Pipeline:
         self.accelerator, self.parallel_context = self._init_parallelism_manager()
         self.model = self._init_model(model_config, model)
 
-        generation_parameters = asdict(model_config.generation_parameters) if model_config else {}
+        generation_parameters = (
+            asdict(model_config.generation_parameters) if model_config else {}
+        )
 
-        self.evaluation_tracker.general_config_logger.log_model_info(generation_parameters, self.model.model_info)
+        self.evaluation_tracker.general_config_logger.log_model_info(
+            generation_parameters, self.model.model_info
+        )
         self._init_tasks_and_requests(tasks=tasks)
         self._init_random_seeds()
         # Final results
@@ -168,12 +173,20 @@ class Pipeline:
         accelerator, parallel_context = None, None
         if self.launcher_type == ParallelismManager.ACCELERATE:
             if not is_accelerate_available():
-                raise ValueError("You are trying to launch an accelerate model, but accelerate is not installed")
-            accelerator = Accelerator(kwargs_handlers=[InitProcessGroupKwargs(timeout=timedelta(seconds=3000))])
+                raise ValueError(
+                    "You are trying to launch an accelerate model, but accelerate is not installed"
+                )
+            accelerator = Accelerator(
+                kwargs_handlers=[
+                    InitProcessGroupKwargs(timeout=timedelta(seconds=3000))
+                ]
+            )
             test_all_gather(accelerator=accelerator)
         elif self.launcher_type == ParallelismManager.NANOTRON:
             if not is_nanotron_available():
-                raise ValueError("You are trying to launch a nanotron model, but nanotron is not installed")
+                raise ValueError(
+                    "You are trying to launch a nanotron model, but nanotron is not installed"
+                )
             dist.initialize_torch_distributed()
             parallel_context = ParallelContext(
                 tensor_parallel_size=self.model_config.lighteval_config.parallelism.tp,
@@ -189,9 +202,13 @@ class Pipeline:
         if model_config is not None:
             if self.parallel_context:
                 return NanotronLightevalModel(
-                    checkpoint_path=os.path.dirname(self.pipeline_parameters.nanotron_checkpoint_path)
-                    if self.pipeline_parameters.nanotron_checkpoint_path
-                    else "",
+                    checkpoint_path=(
+                        os.path.dirname(
+                            self.pipeline_parameters.nanotron_checkpoint_path
+                        )
+                        if self.pipeline_parameters.nanotron_checkpoint_path
+                        else ""
+                    ),
                     nanotron_config=self.model_config,
                     parallel_context=self.parallel_context,
                     debug_one_layer_model=False,
@@ -199,7 +216,9 @@ class Pipeline:
                     env_config=self.pipeline_parameters.env_config,
                 )
             else:
-                return load_model(config=model_config, env_config=self.pipeline_parameters.env_config)
+                return load_model(
+                    config=model_config, env_config=self.pipeline_parameters.env_config
+                )
         if isinstance(model, TransformersModel):
             return model
         else:
@@ -211,7 +230,11 @@ class Pipeline:
             )
 
     def _init_tasks_and_requests(self, tasks: str):
-        with local_ranks_zero_first() if self.launcher_type == ParallelismManager.NANOTRON else nullcontext():
+        with (
+            local_ranks_zero_first()
+            if self.launcher_type == ParallelismManager.NANOTRON
+            else nullcontext()
+        ):
             logger.info("--- LOADING TASKS ---")
             registry = Registry(
                 cache_dir=self.pipeline_parameters.env_config.cache_dir,
@@ -223,7 +246,10 @@ class Pipeline:
             # review if they have to be updated.
             if self._metric_options:
                 self._update_num_samples(task_dict)
-            LightevalTask.load_datasets(list(task_dict.values()), self.pipeline_parameters.dataset_loading_processes)
+            LightevalTask.load_datasets(
+                list(task_dict.values()),
+                self.pipeline_parameters.dataset_loading_processes,
+            )
 
             self.evaluation_tracker.task_config_logger.log(task_dict)
 
@@ -297,7 +323,9 @@ class Pipeline:
 
         if self.is_main_process():
             self.evaluation_tracker.general_config_logger.log_end_time()
-            self.evaluation_tracker.metrics_logger.aggregate(task_dict=self.task_dict, bootstrap_iters=1000)
+            self.evaluation_tracker.metrics_logger.aggregate(
+                task_dict=self.task_dict, bootstrap_iters=1000
+            )
             self.evaluation_tracker.details_logger.aggregate()
 
             for weights in ["delta", "adapter"]:
@@ -387,11 +415,16 @@ class Pipeline:
         try:
             return ast.literal_eval(processed)
         except Exception as e:
-            raise ValueError(f"Failed to parse after preprocessing. " f"Processed string:\n{processed}\n\nError: {e}")
+            raise ValueError(
+                f"Failed to parse after preprocessing. "
+                f"Processed string:\n{processed}\n\nError: {e}"
+            )
 
     def _load_responses_from_details(self):
         logger.info("--- LOADING RESPONSES FROM DETAILS ---")
-        sample_id_to_responses: dict[(SampleUid, MetricCategory), list[ModelResponse]] = collections.defaultdict(list)
+        sample_id_to_responses: dict[
+            (SampleUid, MetricCategory), list[ModelResponse]
+        ] = collections.defaultdict(list)
 
         request_types = list(self.requests.keys())
         if len(request_types) > 1:
@@ -401,29 +434,52 @@ class Pipeline:
         model_response_type = self._get_model_response_type(request_types[0])
 
         details_datasets = self.evaluation_tracker.load_details_datasets(
-            self.pipeline_parameters.load_responses_from_details_date_id, self.task_names_list
+            self.pipeline_parameters.load_responses_from_details_date_id,
+            self.task_names_list,
         )
 
-        for task_name, dataset in tqdm(details_datasets.items(), desc="Loading responses from details for tasks"):
+        for task_name, dataset in tqdm(
+            details_datasets.items(), desc="Loading responses from details for tasks"
+        ):
             task: LightevalTask = self._get_task(task_name)
             num_samples = len(set(dataset["specifics"]))
-            max_samples = self.pipeline_parameters.max_samples if self.pipeline_parameters.max_samples else num_samples
+            max_samples = (
+                self.pipeline_parameters.max_samples
+                if self.pipeline_parameters.max_samples
+                else num_samples
+            )
             if num_samples > max_samples:
                 logger.warning(
                     f"Skipping {num_samples - max_samples} samples for {task_name} when loading responses from details because max_samples is set to {max_samples}"
                 )
                 num_samples = self.pipeline_parameters.max_samples
 
-            predictions = [self._unpack(ast.literal_eval(p)) for p in dataset["predictions"][:num_samples]]
-            input_tokens = [self._parse_tensor_string(t) for t in dataset["input_tokens"][:num_samples]]
-            cont_tokens = [self._parse_tensor_string(t) for t in dataset["cont_tokens"][:num_samples]]
-            truncated = [ast.literal_eval(t)[0] for t in dataset["truncated"][:num_samples]]
+            predictions = [
+                self._unpack(ast.literal_eval(p))
+                for p in dataset["predictions"][:num_samples]
+            ]
+            input_tokens = [
+                self._parse_tensor_string(t)
+                for t in dataset["input_tokens"][:num_samples]
+            ]
+            cont_tokens = [
+                self._parse_tensor_string(t)
+                for t in dataset["cont_tokens"][:num_samples]
+            ]
+            truncated = [
+                ast.literal_eval(t)[0] for t in dataset["truncated"][:num_samples]
+            ]
             padded = [ast.literal_eval(p)[0] for p in dataset["padded"][:num_samples]]
 
             if model_response_type == GenerativeResponse:
-                logits = [ast.literal_eval(p) for p in dataset["pred_logits"][:num_samples]]
+                logits = [
+                    ast.literal_eval(p) for p in dataset["pred_logits"][:num_samples]
+                ]
 
-            for metric_category, has_metric_category in task.has_metric_category.items():
+            for (
+                metric_category,
+                has_metric_category,
+            ) in task.has_metric_category.items():
                 if not has_metric_category:
                     continue
 
@@ -439,7 +495,9 @@ class Pipeline:
                         kwargs["logits"] = logits[idx]
 
                     response = model_response_type(**kwargs)
-                    sample_id_to_responses[(SampleUid(task_name, f"{idx}_{0}"), metric_category)] = [response]
+                    sample_id_to_responses[
+                        (SampleUid(task_name, f"{idx}_{0}"), metric_category)
+                    ] = [response]
         return sample_id_to_responses
 
     def _get_model_response_type(self, request_type):
@@ -464,18 +522,26 @@ class Pipeline:
         # Running all requests depending on the model call type (log likelihood, generative, ...)
         # to be able to batch them
         logger.info("--- RUNNING MODEL ---")
-        sample_id_to_responses: dict[(SampleUid, MetricCategory), list[ModelResponse]] = collections.defaultdict(list)
+        sample_id_to_responses: dict[
+            (SampleUid, MetricCategory), list[ModelResponse]
+        ] = collections.defaultdict(list)
 
         for request_type, requests in self.requests.items():
             logger.info(f"Running {request_type} requests")
-            run_model = self.model.get_method_from_request_type(request_type=request_type)
-            responses = run_model(requests, override_bs=self.pipeline_parameters.override_batch_size)
+            run_model = self.model.get_method_from_request_type(
+                request_type=request_type
+            )
+            responses = run_model(
+                requests, override_bs=self.pipeline_parameters.override_batch_size
+            )
 
             # Storing the responses associated to the same samples together
             for response, request in zip(responses, requests):
                 for metric_category in request.metric_categories:
                     sample_id = SampleUid(request.task_name, request.sample_index)
-                    sample_id_to_responses[(sample_id, metric_category)].append(response)
+                    sample_id_to_responses[(sample_id, metric_category)].append(
+                        response
+                    )
 
         # Cleaning up the model before running metrics
         self.model.cleanup()
@@ -504,10 +570,19 @@ class Pipeline:
             lambda: collections.defaultdict(lambda: collections.defaultdict(list))
         )
 
-        for (sample_id, metric_category), sample_responses in sample_id_to_responses.items():
-            task_metric_category_groups[sample_id.task_name][metric_category]["ids"].append(sample_id.doc_id_seed)
-            task_metric_category_groups[sample_id.task_name][metric_category]["responses"].append(sample_responses)
-            task_metric_category_groups[sample_id.task_name][metric_category]["docs"].append(self.docs[sample_id])
+        for (
+            sample_id,
+            metric_category,
+        ), sample_responses in sample_id_to_responses.items():
+            task_metric_category_groups[sample_id.task_name][metric_category][
+                "ids"
+            ].append(sample_id.doc_id_seed)
+            task_metric_category_groups[sample_id.task_name][metric_category][
+                "responses"
+            ].append(sample_responses)
+            task_metric_category_groups[sample_id.task_name][metric_category][
+                "docs"
+            ].append(self.docs[sample_id])
 
         for task_name, samples_per_metric in task_metric_category_groups.items():
             task: LightevalTask = self._get_task(task_name)
@@ -516,8 +591,14 @@ class Pipeline:
                 sample_ids = samples["ids"]
                 responses = samples["responses"]
                 docs = samples["docs"]
-                metric_function = task.get_metric_method_from_category(metric_category=metric_category)
-                metric_category_metrics = [metric for metric in task.metrics if metric.category == metric_category]
+                metric_function = task.get_metric_method_from_category(
+                    metric_category=metric_category
+                )
+                metric_category_metrics = [
+                    metric
+                    for metric in task.metrics
+                    if metric.category == metric_category
+                ]
 
                 outputs = metric_function(
                     sample_ids=sample_ids,
@@ -528,7 +609,9 @@ class Pipeline:
 
                 for output, doc, response in zip(outputs, docs, responses):
                     self.evaluation_tracker.metrics_logger.log(task_name, output)
-                    self.evaluation_tracker.details_logger.log(task_name, task, doc, response, output)
+                    self.evaluation_tracker.details_logger.log(
+                        task_name, task, doc, response, output
+                    )
 
     def save_and_push_results(self):
         logger.info("--- SAVING AND PUSHING RESULTS ---")
